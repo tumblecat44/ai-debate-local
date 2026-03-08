@@ -8,10 +8,11 @@ API 직접 호출 대신 이미 설치된 터미널 CLI를 활용하여 비용�
 
 ```bash
 # 마켓플레이스 등록
-claude /plugin marketplace add tumblecat44/ai-debate-local
+# Claude Code 안에서 실행
+/plugin marketplace add tumblecat44/ai-debate-local
 
 # 플러그인 설치
-claude /plugin install ai-debate@ai-debate-local
+/plugin install ai-debate@ai-debate-local
 ```
 
 npm 의존성 없이 바로 사용 가능합니다.
