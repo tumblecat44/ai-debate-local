@@ -1,0 +1,24 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "ai-debate-local",
+  "description": "터미널 AI Agent들의 끝장 토론 Claude Code 플러그인",
+  "owner": {
+    "name": "tumblecat44",
+    "url": "https://github.com/tumblecat44"
+  },
+  "plugins": [
+    {
+      "name": "ai-debate",
+      "description": "터미널 AI Agent CLI들이 4단계 구조화된 토론을 진행하여 합의를 도출합니다",
+      "version": "1.0.0",
+      "source": "./",
+      "author": {
+        "name": "tumblecat44"
+      },
+      "repository": "https://github.com/tumblecat44/ai-debate-local",
+      "license": "MIT",
+      "keywords": ["debate", "multi-agent", "consensus"],
+      "tags": ["multi-agent", "debate"]
+    }
+  ]
+}
