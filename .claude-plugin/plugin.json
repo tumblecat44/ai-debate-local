@@ -1,0 +1,9 @@
+{
+  "name": "ai-debate",
+  "version": "1.0.0",
+  "description": "터미널 AI Agent들의 끝장 토론 플러그인",
+  "author": { "name": "dgsw67" },
+  "license": "MIT",
+  "keywords": ["debate", "multi-agent", "consensus"],
+  "skills": "./skills"
+}
