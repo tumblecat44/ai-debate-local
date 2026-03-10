@@ -1,30 +1,51 @@
 {
   "debate": {
     "agents": [
-      { "name": "claude", "command": "claude -p", "emoji": "🧠", "color": "CYAN" },
-      { "name": "codex", "command": "codex exec --skip-git-repo-check", "emoji": "🤖", "color": "BLUE" },
-      { "name": "gemini", "command": "gemini -p", "emoji": "💎", "color": "GREEN" }
-    ],
-    "personas": [
-      { "id": "pragmatist", "label": "실용주의자", "emoji": "🧠", "instruction": "현실적 구현 가능성과 실용성을 중시합니다. 이론보다 실제 적용 가능한 해법을 찾으세요." },
-      { "id": "idealist", "label": "이상주의자", "emoji": "💡", "instruction": "최선의 결과를 추구합니다. 현실적 제약보다 이상적인 해법과 비전을 제시하세요." },
-      { "id": "devils_advocate", "label": "악마의 변호인", "emoji": "😈", "instruction": "모든 주장의 약점과 반례를 찾아 반박합니다. 비판적 사고로 논리의 허점을 공격하세요." },
-      { "id": "empiricist", "label": "경험주의자", "emoji": "🔬", "instruction": "데이터와 증거를 요구합니다. 주관적 의견보다 객관적 사실과 연구 결과에 근거하세요." },
-      { "id": "synthesizer", "label": "종합주의자", "emoji": "🔗", "instruction": "다양한 관점을 통합합니다. 대립되는 의견에서 공통점을 찾고 종합적 해법을 제시하세요." },
-      { "id": "contrarian", "label": "역발상가", "emoji": "🔄", "instruction": "비주류 관점과 역발상을 제시합니다. 다수가 간과하는 측면을 조명하세요." },
-      { "id": "analyst", "label": "분석가", "emoji": "📊", "instruction": "논리 구조를 해체하고 분석합니다. 각 주장의 전제, 근거, 결론을 체계적으로 평가하세요." }
+      {
+        "name": "claude",
+        "command": "claude --model opus -p",
+        "emoji": "🧠",
+        "color": "CYAN",
+        "persona": {
+          "role": "균형적 중재자",
+          "style": "양측 주장을 종합하고, 실현 가능한 합의점을 찾습니다.",
+          "stance": "핵심 원칙은 지키되, 세부사항에서는 유연하게 타협하세요."
+        }
+      },
+      {
+        "name": "codex",
+        "command": "codex exec --skip-git-repo-check -m 5.3-spark",
+        "emoji": "🤖",
+        "color": "BLUE",
+        "persona": {
+          "role": "실용주의 옹호자",
+          "style": "데이터와 실증적 근거를 중시하며, 현실적 적용 가능성을 따집니다.",
+          "stance": "효율성과 즉각적 이익을 우선시하는 입장에서 논쟁하세요."
+        }
+      },
+      {
+        "name": "gemini",
+        "command": "gemini -p",
+        "emoji": "💎",
+        "color": "GREEN",
+        "persona": {
+          "role": "원칙주의 비판자",
+          "style": "원칙과 장기적 영향을 중시하며, 숨겨진 위험을 지적합니다.",
+          "stance": "지속가능성과 윤리적 고려를 우선시하는 입장에서 논쟁하세요."
+        }
+      }
     ],
     "stages": {
       "position": { "rounds": 1, "description": "입장 제시" },
       "cross_exam": { "rounds": 4, "description": "교차 질문" },
       "common_ground": { "rounds": 2, "description": "공통점 추출" },
-      "consensus": { "max_rounds": 15, "description": "합의안 도출" }
+      "consensus": { "max_rounds": 999, "description": "합의안 도출 (만장일치까지 끝장)" }
     },
     "settings": {
       "timeout": 120,
       "min_agents": 2,
-      "chairman": "auto",
-      "exclude_chairman": true
+      "chairman": "none",
+      "exclude_chairman": false
     }
   }
 }

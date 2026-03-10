@@ -79,9 +79,9 @@ node "{{SKILL_DIR}}/../../scripts/debate-job.js" round --debate-dir "$DEBATE_DIR
 node "{{SKILL_DIR}}/../../scripts/debate-job.js" round --debate-dir "$DEBATE_DIR" --stage common-ground --round $N
 ```
 
-### Step 5: Stage 4 - 합의안 도출 (최대 15 rounds)
+### Step 5: Stage 4 - 합의안 도출 (만장일치까지 끝장)
 
-합의에 도달할 때까지 반복합니다 (최대 15회):
+전원 합의할 때까지 무한 반복합니다:
 ```bash
 node "{{SKILL_DIR}}/../../scripts/debate-job.js" round --debate-dir "$DEBATE_DIR" --stage consensus --round $N
 ```

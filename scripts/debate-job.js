@@ -71,14 +71,9 @@ function parseConfig(configPath) {
   const fallback = {
     debate: {
       agents: [
-        { name: 'claude', command: 'claude -p', emoji: '🧠', color: 'CYAN' },
-        { name: 'codex', command: 'codex exec --skip-git-repo-check', emoji: '🤖', color: 'BLUE' },
-        { name: 'gemini', command: 'gemini -p', emoji: '💎', color: 'GREEN' },
-      ],
-      personas: [
-        { id: 'pragmatist', label: '실용주의자', emoji: '🧠', instruction: '현실적 구현 가능성을 중시합니다.' },
-        { id: 'idealist', label: '이상주의자', emoji: '💡', instruction: '최선의 결과를 추구합니다.' },
-        { id: 'devils_advocate', label: '악마의 변호인', emoji: '😈', instruction: '모든 주장에 반박합니다.' },
+        { name: 'claude', command: 'claude -p', emoji: '🧠', color: 'CYAN', persona: { role: '균형적 중재자', style: '양측 주장을 종합하고, 실현 가능한 합의점을 찾습니다.', stance: '핵심 원칙은 지키되, 세부사항에서는 유연하게 타협하세요.' } },
+        { name: 'codex', command: 'codex exec --skip-git-repo-check', emoji: '🤖', color: 'BLUE', persona: { role: '실용주의 옹호자', style: '데이터와 실증적 근거를 중시하며, 현실적 적용 가능성을 따집니다.', stance: '효율성과 즉각적 이익을 우선시하는 입장에서 논쟁하세요.' } },
+        { name: 'gemini', command: 'gemini -p', emoji: '💎', color: 'GREEN', persona: { role: '원칙주의 비판자', style: '원칙과 장기적 영향을 중시하며, 숨겨진 위험을 지적합니다.', stance: '지속가능성과 윤리적 고려를 우선시하는 입장에서 논쟁하세요.' } },
       ],
       stages: {
         position: { rounds: 1 },
@@ -86,7 +81,7 @@ function parseConfig(configPath) {
         common_ground: { rounds: 2 },
         consensus: { max_rounds: 15 },
       },
-      settings: { timeout: 120, min_agents: 2, chairman: 'auto', exclude_chairman: true },
+      settings: { timeout: 120, min_agents: 2, chairman: 'none', exclude_chairman: false },
     },
   };
 
@@ -98,7 +93,6 @@ function parseConfig(configPath) {
       return {
         debate: {
           agents: parsed.debate.agents || fallback.debate.agents,
-          personas: parsed.debate.personas || fallback.debate.personas,
           stages: { ...fallback.debate.stages, ...(parsed.debate.stages || {}) },
           settings: { ...fallback.debate.settings, ...(parsed.debate.settings || {}) },
         },
@@ -134,7 +128,7 @@ function buildHistory(debateDir, upToStage, upToRound) {
   const agentPersonaMap = {};
   if (debateMeta && debateMeta.participants) {
     for (const p of debateMeta.participants) {
-      agentPersonaMap[p.agent] = `${p.persona_emoji} ${p.agent} (${p.persona_label})`;
+      agentPersonaMap[p.agent] = `${p.agent_emoji} ${p.agent} (${p.persona_role})`;
     }
   }
 
@@ -277,18 +271,16 @@ function cmdStart(options) {
     exitWithError(`start: need at least ${settings.min_agents || 2} agents, got ${agents.length}`);
   }
 
-  // Assign personas
-  const personas = config.debate.personas;
-  const participants = agents.map((agent, i) => {
-    const persona = personas[i % personas.length];
+  // Assign personas - fixed per agent from config
+  const participants = agents.map((agent) => {
+    const persona = agent.persona || {};
     return {
       agent: agent.name,
       command: agent.command,
       agent_emoji: agent.emoji || '',
-      persona_id: persona.id,
-      persona_label: persona.label,
-      persona_emoji: persona.emoji,
-      persona_instruction: persona.instruction,
+      persona_role: persona.role || agent.name,
+      persona_style: persona.style || '',
+      persona_stance: persona.stance || '',
     };
   });
 
@@ -322,6 +314,26 @@ function cmdStart(options) {
   process.stdout.write(JSON.stringify({ debateDir, ...debateMeta }, null, 2) + '\n');
 }
 
+function waitForWorker(agentDir, agentName, timeout) {
+  const statusPath = path.join(agentDir, 'status.json');
+  const startTime = Date.now();
+  const maxWait = (timeout + 30) * 1000;
+
+  while (true) {
+    const status = readJsonIfExists(statusPath);
+    if (status && status.state !== 'queued' && status.state !== 'running') break;
+    if (Date.now() - startTime > maxWait) break;
+    sleepMs(500);
+  }
+
+  const status = readJsonIfExists(statusPath);
+  const output = readTextIfExists(path.join(agentDir, 'output.txt')).trim();
+  return {
+    state: status ? status.state : 'unknown',
+    output: output || (status && status.message) || '[응답 없음]',
+  };
+}
+
 function cmdRound(options) {
   const debateDir = options['debate-dir'];
   const stage = options.stage;
@@ -343,24 +355,52 @@ function cmdRound(options) {
   const history = stage === 'position' ? '' : buildHistory(debateDir, stageInfo.dir, round);
   const consensusHistory = stage === 'consensus' ? buildConsensusHistory(debateDir, round) : '';
 
-  // Spawn workers for each participant
   const participants = debateMeta.participants;
   const timeout = debateMeta.settings.timeout || 120;
+
+  // --- Sequential execution: each agent sees previous agents' responses from THIS round ---
+  const currentRoundOutputs = [];
+  const results = [];
 
   for (const p of participants) {
     const agentSafe = safeFileName(p.agent);
     const agentDir = path.join(agentsDir, agentSafe);
     ensureDir(agentDir);
 
-    // Render prompt
+    // Build current round context from agents who already spoke this round
+    const currentRoundContext = currentRoundOutputs
+      .map(o => `[${o.label}]:\n${o.output}`)
+      .join('\n\n');
+
+    // Build round-aware consensus fields
+    let roundStatus = '';
+    let consensusInstruction = '';
+    if (stage === 'consensus') {
+      if (round >= 7) {
+        roundStatus = `현재 ${round}라운드입니다. 충분히 논쟁했습니다. 사소한 세부사항보다 핵심 원칙의 합의에 집중하세요. 완벽한 합의보다 실질적 합의가 중요합니다.`;
+      } else if (round >= 3) {
+        roundStatus = `현재 ${round}라운드입니다. 충분히 논쟁했다면 합의할 수 있습니다.`;
+      } else {
+        roundStatus = `현재 ${round}라운드입니다. 최소 3라운드까지는 합의할 수 없습니다. (${3 - round}라운드 남음)`;
+      }
+      consensusInstruction = round >= 3
+        ? '동의하면 응답 마지막에 [CONSENSUS]를 붙이세요. 동의하지 않으면 [DISAGREE]를 붙이세요.'
+        : '아직 합의할 수 없습니다. 논쟁을 계속하세요.';
+    }
+
+    // Render prompt with current round context included
     const prompt = renderTemplate(template, {
-      persona_emoji: p.persona_emoji,
-      persona_label: p.persona_label,
-      persona_instruction: p.persona_instruction,
+      agent_name: p.agent,
+      persona_role: p.persona_role,
+      persona_style: p.persona_style,
+      persona_stance: p.persona_stance,
       topic: debateMeta.topic,
       round: String(round),
       history,
+      current_round_context: currentRoundContext,
       consensus_history: consensusHistory,
+      round_status: roundStatus,
+      consensus_instruction: consensusInstruction,
     });
 
     fs.writeFileSync(path.join(agentDir, 'prompt.txt'), prompt, 'utf8');
@@ -369,7 +409,7 @@ function cmdRound(options) {
       queuedAt: new Date().toISOString(), command: p.command,
     });
 
-    // Spawn detached worker
+    // Spawn worker and WAIT for completion before next agent
     const workerArgs = [
       WORKER_PATH,
       '--agent-dir', agentDir,
@@ -382,6 +422,20 @@ function cmdRound(options) {
       detached: true, stdio: 'ignore', env: process.env,
     });
     child.unref();
+
+    // Wait for this agent to finish
+    const result = waitForWorker(agentDir, p.agent, timeout);
+
+    // Collect output for next agent's context
+    const label = `${p.agent_emoji} ${p.agent} (${p.persona_role})`;
+    currentRoundOutputs.push({ label, output: result.output });
+
+    results.push({
+      agent: p.agent,
+      persona: `${p.agent_emoji} ${p.persona_role}`,
+      state: result.state,
+      output: result.output,
+    });
   }
 
   // Update debate meta
@@ -389,39 +443,6 @@ function cmdRound(options) {
   debateMeta.currentRound = round;
   debateMeta.totalRounds++;
   atomicWriteJson(path.join(debateDir, 'debate.json'), debateMeta);
-
-  // Poll until all workers complete
-  const startTime = Date.now();
-  const maxWait = (timeout + 30) * 1000;
-
-  while (true) {
-    let allDone = true;
-    for (const p of participants) {
-      const statusPath = path.join(agentsDir, safeFileName(p.agent), 'status.json');
-      const status = readJsonIfExists(statusPath);
-      if (!status || status.state === 'queued' || status.state === 'running') {
-        allDone = false;
-        break;
-      }
-    }
-    if (allDone) break;
-    if (Date.now() - startTime > maxWait) break;
-    sleepMs(500);
-  }
-
-  // Collect results
-  const results = [];
-  for (const p of participants) {
-    const agentSafe = safeFileName(p.agent);
-    const status = readJsonIfExists(path.join(agentsDir, agentSafe, 'status.json'));
-    const output = readTextIfExists(path.join(agentsDir, agentSafe, 'output.txt')).trim();
-    results.push({
-      agent: p.agent,
-      persona: `${p.persona_emoji} ${p.persona_label}`,
-      state: status ? status.state : 'unknown',
-      output: output || (status && status.message) || '[응답 없음]',
-    });
-  }
 
   process.stdout.write(JSON.stringify({
     debateDir, stage, round, results,
@@ -465,9 +486,8 @@ function cmdCheckConsensus(options) {
   }
 
   const allAgree = consensusCount === totalResponded && totalResponded > 0;
-  const majorityAgree = consensusCount > totalResponded / 2 && totalResponded > 0;
 
-  if (allAgree || majorityAgree) {
+  if (allAgree) {
     debateMeta.consensusReached = true;
     debateMeta.consensusRound = round;
     debateMeta.state = 'consensus_reached';
@@ -475,7 +495,7 @@ function cmdCheckConsensus(options) {
   }
 
   process.stdout.write(JSON.stringify({
-    consensus: allAgree || majorityAgree,
+    consensus: allAgree,
     unanimous: allAgree,
     round,
     agreed: consensusCount,
@@ -515,7 +535,7 @@ function cmdFinalize(options) {
 
   // Header
   const participantList = debateMeta.participants
-    .map(p => `${p.persona_emoji} ${p.agent} (${p.persona_label})`)
+    .map(p => `${p.agent_emoji} ${p.agent} (${p.persona_role})`)
     .join(', ');
 
   const consensusStatus = debateMeta.consensusReached
@@ -539,7 +559,7 @@ function cmdFinalize(options) {
     lines.push('');
     for (const p of debateMeta.participants) {
       const output = readTextIfExists(path.join(posDir, safeFileName(p.agent), 'output.txt')).trim();
-      lines.push(`### ${p.persona_emoji} ${p.agent} — ${p.persona_label}`);
+      lines.push(`### ${p.agent_emoji} ${p.agent} — ${p.persona_role}`);
       lines.push(output || '[응답 없음]');
       lines.push('');
     }
@@ -560,7 +580,7 @@ function cmdFinalize(options) {
       if (fs.existsSync(agentsPath)) {
         for (const p of debateMeta.participants) {
           const output = readTextIfExists(path.join(agentsPath, safeFileName(p.agent), 'output.txt')).trim();
-          lines.push(`#### ${p.persona_emoji} ${p.agent}`);
+          lines.push(`#### ${p.agent_emoji} ${p.agent}`);
           lines.push(output || '[응답 없음]');
           lines.push('');
         }
@@ -583,7 +603,7 @@ function cmdFinalize(options) {
       if (fs.existsSync(agentsPath)) {
         for (const p of debateMeta.participants) {
           const output = readTextIfExists(path.join(agentsPath, safeFileName(p.agent), 'output.txt')).trim();
-          lines.push(`#### ${p.persona_emoji} ${p.agent}`);
+          lines.push(`#### ${p.agent_emoji} ${p.agent}`);
           lines.push(output || '[응답 없음]');
           lines.push('');
         }
@@ -607,7 +627,7 @@ function cmdFinalize(options) {
         for (const p of debateMeta.participants) {
           const output = readTextIfExists(path.join(agentsPath, safeFileName(p.agent), 'output.txt')).trim();
           const hasConsensus = output.includes('[CONSENSUS]');
-          lines.push(`#### ${p.persona_emoji} ${p.agent} ${hasConsensus ? '✅' : ''}`);
+          lines.push(`#### ${p.agent_emoji} ${p.agent} ${hasConsensus ? '✅' : ''}`);
           lines.push(output || '[응답 없음]');
           lines.push('');
         }
