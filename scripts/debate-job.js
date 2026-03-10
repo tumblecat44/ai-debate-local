@@ -7,7 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 
 const SCRIPT_DIR = __dirname;
 const PLUGIN_DIR = path.resolve(SCRIPT_DIR, '..');
@@ -61,6 +61,29 @@ function sleepMs(ms) {
   const sab = new SharedArrayBuffer(4);
   const view = new Int32Array(sab);
   Atomics.wait(view, 0, 0, Math.trunc(msNum));
+}
+
+function splitCommand(command) {
+  const tokens = [];
+  let current = '';
+  let inSingle = false;
+  let inDouble = false;
+  let escapeNext = false;
+  for (const ch of String(command || '')) {
+    if (escapeNext) { current += ch; escapeNext = false; continue; }
+    if (!inSingle && ch === '\\') { escapeNext = true; continue; }
+    if (!inDouble && ch === "'") { inSingle = !inSingle; continue; }
+    if (!inSingle && ch === '"') { inDouble = !inDouble; continue; }
+    if (!inSingle && !inDouble && /\s/.test(ch)) {
+      if (current) tokens.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  if (current) tokens.push(current);
+  if (inSingle || inDouble) return null;
+  return tokens;
 }
 
 function safeFileName(name) {
@@ -189,14 +212,17 @@ function buildHistory(debateDir, upToStage, upToRound) {
 
   let history = lines.join('\n');
 
-  // Truncate if too long - keep recent 3 rounds + position
-  if (history.length > 12000) {
+  // Strip OMC hook appendages from history to save tokens
+  history = history.replace(/\n─{2,}[\s\S]*?bkit Feature Usage[\s\S]*?─{2,}\n?/g, '');
+
+  // Truncate if too long - keep recent 2 rounds + position
+  if (history.length > 6000) {
     const positionIdx = history.indexOf('--- 1-position');
     const positionEnd = history.indexOf('\n--- 2-', positionIdx);
     const positionSection = positionEnd > 0 ? history.substring(positionIdx, positionEnd) : '';
 
     const parts = history.split(/\n--- /);
-    const recentParts = parts.slice(-3);
+    const recentParts = parts.slice(-2);
     history = `${positionSection}\n\n[...이전 라운드 생략...]\n\n--- ${recentParts.join('\n--- ')}`;
   }
 
@@ -224,7 +250,19 @@ function buildConsensusHistory(debateDir, upToRound) {
     }
   }
 
-  return lines.join('\n');
+  let consensusHist = lines.join('\n');
+
+  // Strip OMC hook appendages
+  consensusHist = consensusHist.replace(/\n─{2,}[\s\S]*?bkit Feature Usage[\s\S]*?─{2,}\n?/g, '');
+
+  // Truncate: keep only last 2 consensus rounds
+  if (consensusHist.length > 4000) {
+    const parts = consensusHist.split(/\n--- 합의 시도/);
+    const recentParts = parts.slice(-2);
+    consensusHist = `[...이전 합의 시도 생략...]\n\n--- 합의 시도${recentParts.join('\n--- 합의 시도')}`;
+  }
+
+  return consensusHist;
 }
 
 // --- Argument parsing ---
@@ -355,19 +393,40 @@ function runOneAgent(p, agentsDir, template, stage, round, debateMeta, history, 
     .map(o => `[${o.label}]:\n${o.output}`)
     .join('\n\n');
 
+  // Load stage config for min_rounds
+  const config = readJsonIfExists(CONFIG_PATH);
+  const stageConfigKey = stage.replace('-', '_');
+  const stageConfig = config && config.debate && config.debate.stages && config.debate.stages[stageConfigKey];
+  const minRounds = (stageConfig && stageConfig.min_rounds) || 1;
+
   let roundStatus = '';
   let consensusInstruction = '';
+  let exhaustionInstruction = '';
+  let agreedInstruction = '';
+
   if (stage === 'consensus') {
     if (round >= 7) {
       roundStatus = `현재 ${round}라운드입니다. 충분히 논쟁했습니다. 사소한 세부사항보다 핵심 원칙의 합의에 집중하세요. 완벽한 합의보다 실질적 합의가 중요합니다.`;
-    } else if (round >= 3) {
+    } else if (round >= minRounds) {
       roundStatus = `현재 ${round}라운드입니다. 충분히 논쟁했다면 합의할 수 있습니다.`;
     } else {
-      roundStatus = `현재 ${round}라운드입니다. 최소 3라운드까지는 합의할 수 없습니다. (${3 - round}라운드 남음)`;
+      roundStatus = `현재 ${round}라운드입니다. 최소 ${minRounds}라운드까지는 합의할 수 없습니다. (${minRounds - round}라운드 남음)`;
     }
-    consensusInstruction = round >= 3
+    consensusInstruction = round >= minRounds
       ? '동의하면 응답 마지막에 [CONSENSUS]를 붙이세요. 동의하지 않으면 [DISAGREE]를 붙이세요.'
       : '아직 합의할 수 없습니다. 논쟁을 계속하세요.';
+  } else if (stage === 'cross-exam') {
+    if (round >= minRounds) {
+      exhaustionInstruction = `현재 ${round}라운드입니다. 더 이상 반박할 새로운 논점이 없다면 응답 마지막에 [EXHAUSTED]를 붙이세요. 아직 반박할 논점이 남아있다면 계속 반박하세요.`;
+    } else {
+      exhaustionInstruction = `현재 ${round}라운드입니다. 최소 ${minRounds}라운드까지는 반박을 계속해야 합니다. (${minRounds - round}라운드 남음)`;
+    }
+  } else if (stage === 'common-ground') {
+    if (round >= minRounds) {
+      agreedInstruction = `현재 ${round}라운드입니다. 공통점이 충분히 정리되었다면 응답 마지막에 [AGREED]를 붙이세요. 아직 정리가 부족하다면 계속 논의하세요.`;
+    } else {
+      agreedInstruction = `현재 ${round}라운드입니다. 최소 ${minRounds}라운드까지는 공통점 추출을 계속해야 합니다. (${minRounds - round}라운드 남음)`;
+    }
   }
 
   const prompt = renderTemplate(template, {
@@ -382,33 +441,82 @@ function runOneAgent(p, agentsDir, template, stage, round, debateMeta, history, 
     consensus_history: consensusHistory,
     round_status: roundStatus,
     consensus_instruction: consensusInstruction,
+    exhaustion_instruction: exhaustionInstruction,
+    agreed_instruction: agreedInstruction,
   });
 
   fs.writeFileSync(path.join(agentDir, 'prompt.txt'), prompt, 'utf8');
+
+  // Direct spawnSync — no worker process, no polling overhead
+  const tokens = splitCommand(p.command);
+  if (!tokens || tokens.length === 0) {
+    atomicWriteJson(path.join(agentDir, 'status.json'), {
+      member: p.agent, state: 'error',
+      message: 'Invalid command string',
+      finishedAt: new Date().toISOString(), command: p.command,
+    });
+    fs.writeFileSync(path.join(agentDir, 'output.txt'), '', 'utf8');
+    return { agent: p.agent, persona: `${p.agent_emoji} ${p.persona_role}`, state: 'error', output: '[커맨드 오류]' };
+  }
+
+  const program = tokens[0];
+  let cliArgs = [...tokens.slice(1)];
+
+  // Token optimization: inject --setting-sources and --system-prompt for claude agent
+  // This prevents CLAUDE.md (90K+ tokens) from being loaded into each subprocess
+  if (program === 'claude') {
+    const debateSystemPrompt = 'You are a debate participant. Respond only with your debate argument in plain text. No tools, no code, no file operations. Keep responses under 5 sentences.';
+    cliArgs = [
+      ...cliArgs.filter(a => a !== '-p'),  // remove -p temporarily
+      '--setting-sources', '',
+      '--system-prompt', debateSystemPrompt,
+      '--no-session-persistence',
+      '-p',  // re-add -p at end so prompt follows it
+    ];
+  }
+
+  cliArgs.push(prompt);
+
+  // Strip CLAUDECODE env var to allow nested Claude sessions
+  const childEnv = { ...process.env };
+  delete childEnv.CLAUDECODE;
+
   atomicWriteJson(path.join(agentDir, 'status.json'), {
-    member: p.agent, state: 'queued',
-    queuedAt: new Date().toISOString(), command: p.command,
+    member: p.agent, state: 'running',
+    startedAt: new Date().toISOString(), command: p.command,
   });
 
-  const workerArgs = [
-    WORKER_PATH,
-    '--agent-dir', agentDir,
-    '--member', p.agent,
-    '--command', p.command,
-    '--timeout', String(timeout),
-  ];
-
-  const child = spawn(process.execPath, workerArgs, {
-    detached: true, stdio: 'ignore', env: process.env,
+  const startMs = Date.now();
+  const result = spawnSync(program, cliArgs, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: childEnv,
+    timeout: (timeout + 30) * 1000,
+    maxBuffer: 10 * 1024 * 1024,
   });
-  child.unref();
+  const durationMs = Date.now() - startMs;
 
-  const result = waitForWorker(agentDir, p.agent, timeout);
+  const stdout = result.stdout ? result.stdout.toString('utf8') : '';
+  const stderr = result.stderr ? result.stderr.toString('utf8') : '';
+
+  fs.writeFileSync(path.join(agentDir, 'output.txt'), stdout, 'utf8');
+  fs.writeFileSync(path.join(agentDir, 'error.txt'), stderr, 'utf8');
+
+  const timedOut = result.signal === 'SIGTERM' && result.error && result.error.code === 'ETIMEDOUT';
+  const state = timedOut ? 'timed_out' : result.status === 0 ? 'done' : 'error';
+
+  atomicWriteJson(path.join(agentDir, 'status.json'), {
+    member: p.agent, state,
+    message: timedOut ? `Timed out after ${timeout}s` : (result.status !== 0 ? stderr.slice(0, 500) : null),
+    startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(),
+    command: p.command, exitCode: result.status, durationMs,
+  });
+
+  const output = stdout.trim() || (state === 'error' ? `[응답 실패: ${stderr.slice(0, 200)}]` : '[응답 없음]');
   return {
     agent: p.agent,
     persona: `${p.agent_emoji} ${p.persona_role}`,
-    state: result.state,
-    output: result.output,
+    state,
+    output,
   };
 }
 
@@ -520,6 +628,67 @@ function cmdCheckConsensus(options) {
     round,
     agreed: consensusCount,
     total: totalResponded,
+  }, null, 2) + '\n');
+}
+
+function cmdCheckStageComplete(options) {
+  const debateDir = options['debate-dir'];
+  const stage = options.stage;
+  const round = parseInt(options.round || '1');
+  if (!debateDir) exitWithError('check-stage-complete: missing --debate-dir');
+  if (!stage) exitWithError('check-stage-complete: missing --stage');
+
+  const debateMeta = readJsonIfExists(path.join(debateDir, 'debate.json'));
+  if (!debateMeta) exitWithError('check-stage-complete: debate.json not found');
+
+  // Determine signal tag and stage directory
+  const signalMap = {
+    'cross-exam': { signal: '[EXHAUSTED]', dir: '2-cross-exam' },
+    'common-ground': { signal: '[AGREED]', dir: '3-common-ground' },
+    'consensus': { signal: '[CONSENSUS]', dir: '4-consensus' },
+  };
+
+  const stageInfo = signalMap[stage];
+  if (!stageInfo) {
+    process.stdout.write(JSON.stringify({ complete: false, reason: `no signal defined for stage "${stage}"` }) + '\n');
+    return;
+  }
+
+  const roundAgentsDir = path.join(debateDir, 'stages', stageInfo.dir, `round-${round}`, 'agents');
+  if (!fs.existsSync(roundAgentsDir)) {
+    process.stdout.write(JSON.stringify({ complete: false, round, reason: 'round not found' }) + '\n');
+    return;
+  }
+
+  const participants = debateMeta.participants;
+  let signalCount = 0;
+  let totalResponded = 0;
+
+  for (const p of participants) {
+    const output = readTextIfExists(path.join(roundAgentsDir, safeFileName(p.agent), 'output.txt'));
+    if (output.trim()) {
+      totalResponded++;
+      if (output.includes(stageInfo.signal)) signalCount++;
+    }
+  }
+
+  const allSignaled = signalCount === totalResponded && totalResponded > 0;
+
+  // For consensus stage, also update debate metadata
+  if (allSignaled && stage === 'consensus') {
+    debateMeta.consensusReached = true;
+    debateMeta.consensusRound = round;
+    debateMeta.state = 'consensus_reached';
+    atomicWriteJson(path.join(debateDir, 'debate.json'), debateMeta);
+  }
+
+  process.stdout.write(JSON.stringify({
+    complete: allSignaled,
+    stage,
+    round,
+    signaled: signalCount,
+    total: totalResponded,
+    signal: stageInfo.signal,
   }, null, 2) + '\n');
 }
 
@@ -713,6 +882,7 @@ function main() {
     case 'round': return cmdRound(options);
     case 'status': return cmdStatus(options);
     case 'check-consensus': return cmdCheckConsensus(options);
+    case 'check-stage-complete': return cmdCheckStageComplete(options);
     case 'results': return cmdResults(options);
     case 'finalize': return cmdFinalize(options);
     case 'clean': return cmdClean(options);

@@ -10,7 +10,7 @@
     {
       "name": "ai-debate",
       "description": "터미널 AI Agent CLI들이 4단계 구조화된 토론을 진행하여 합의를 도출합니다",
-      "version": "1.1.1",
+      "version": "1.2.0",
       "source": "./",
       "author": {
         "name": "tumblecat44"

@@ -8,6 +8,8 @@ description: AI 끝장 토론 - 터미널 AI Agent들이 4단계로 토론하여
 터미널에 설치된 AI Agent CLI들이 4단계 구조화된 토론을 진행합니다.
 Claude Code가 모더레이터로서 토론을 진행하고 결과를 정리합니다.
 
+모든 단계가 "끝장"입니다 — 고정 라운드 수 없이, 각 단계의 종료 조건이 만족될 때까지 계속합니다.
+
 ## Arguments
 
 `$ARGUMENTS` = 토론 주제 (없으면 사용자에게 질문)
@@ -81,25 +83,37 @@ node "{{SKILL_DIR}}/../../scripts/debate-job.js" round --debate-dir "$DEBATE_DIR
 ```
 → 결과 즉시 출력 → 다음 에이전트 실행 → 결과 즉시 출력 → ...
 
-### Step 3: Stage 2 - 교차 질문 (4 rounds)
+### Step 3: Stage 2 - 교차 질문 (논점 소진까지 끝장)
 
-4회 반복합니다 (round 1~4). 각 라운드마다:
+**무한 반복합니다** (round 1부터). 각 라운드마다:
 1. 라운드 헤더 출력 (`Stage 2/4: 교차 질문 | Round N`)
 2. participants의 각 에이전트를 순서대로 한 명씩 실행:
 ```bash
 node "{{SKILL_DIR}}/../../scripts/debate-job.js" round --debate-dir "$DEBATE_DIR" --stage cross-exam --round $N --agent "$AGENT_NAME"
 ```
-3. 각 에이전트 응답을 즉시 출력
+3. 각 에이전트 응답을 즉시 출력 (응답에 `[EXHAUSTED]`가 있으면 🏁 표시)
+4. 모든 에이전트 완료 후 종료 조건 체크:
+```bash
+node "{{SKILL_DIR}}/../../scripts/debate-job.js" check-stage-complete --debate-dir "$DEBATE_DIR" --stage cross-exam --round $N
+```
 
-### Step 4: Stage 3 - 공통점 추출 (2 rounds)
+`complete: true`이면 반복을 중단하고 Stage 3으로 진행합니다.
 
-2회 반복합니다 (round 1~2). 각 라운드마다:
+### Step 4: Stage 3 - 공통점 추출 (합의까지 끝장)
+
+**무한 반복합니다** (round 1부터). 각 라운드마다:
 1. 라운드 헤더 출력 (`Stage 3/4: 공통점 추출 | Round N`)
 2. participants의 각 에이전트를 순서대로 한 명씩 실행:
 ```bash
 node "{{SKILL_DIR}}/../../scripts/debate-job.js" round --debate-dir "$DEBATE_DIR" --stage common-ground --round $N --agent "$AGENT_NAME"
 ```
-3. 각 에이전트 응답을 즉시 출력
+3. 각 에이전트 응답을 즉시 출력 (응답에 `[AGREED]`가 있으면 ✅ 표시)
+4. 모든 에이전트 완료 후 종료 조건 체크:
+```bash
+node "{{SKILL_DIR}}/../../scripts/debate-job.js" check-stage-complete --debate-dir "$DEBATE_DIR" --stage common-ground --round $N
+```
+
+`complete: true`이면 반복을 중단하고 Stage 4로 진행합니다.
 
 ### Step 5: Stage 4 - 합의안 도출 (만장일치까지 끝장)
 
@@ -112,10 +126,10 @@ node "{{SKILL_DIR}}/../../scripts/debate-job.js" round --debate-dir "$DEBATE_DIR
 3. 각 에이전트 응답을 즉시 출력 (응답에 `[CONSENSUS]`가 있으면 ✅ 표시)
 4. 모든 에이전트 완료 후 합의 체크:
 ```bash
-node "{{SKILL_DIR}}/../../scripts/debate-job.js" check-consensus --debate-dir "$DEBATE_DIR" --round $N
+node "{{SKILL_DIR}}/../../scripts/debate-job.js" check-stage-complete --debate-dir "$DEBATE_DIR" --stage consensus --round $N
 ```
 
-`consensus: true`이면 반복을 중단합니다.
+`complete: true`이면 반복을 중단합니다.
 
 ### Step 6: 마무리
 

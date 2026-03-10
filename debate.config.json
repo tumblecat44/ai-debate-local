@@ -3,7 +3,7 @@
     "agents": [
       {
         "name": "claude",
-        "command": "claude --model opus -p",
+        "command": "claude --model sonnet -p",
         "emoji": "🧠",
         "color": "CYAN",
         "persona": {
@@ -14,7 +14,7 @@
       },
       {
         "name": "codex",
-        "command": "codex exec --skip-git-repo-check -m 5.3-spark",
+        "command": "codex exec --skip-git-repo-check",
         "emoji": "🤖",
         "color": "BLUE",
         "persona": {
@@ -25,7 +25,7 @@
       },
       {
         "name": "gemini",
-        "command": "gemini -p",
+        "command": "gemini -m gemini-3-flash-preview -p",
         "emoji": "💎",
         "color": "GREEN",
         "persona": {
@@ -37,9 +37,9 @@
     ],
     "stages": {
       "position": { "rounds": 1, "description": "입장 제시" },
-      "cross_exam": { "rounds": 4, "description": "교차 질문" },
-      "common_ground": { "rounds": 2, "description": "공통점 추출" },
-      "consensus": { "max_rounds": 999, "description": "합의안 도출 (만장일치까지 끝장)" }
+      "cross_exam": { "min_rounds": 2, "max_rounds": 999, "exit_signal": "[EXHAUSTED]", "description": "교차 질문 (새 논점 소진까지 끝장)" },
+      "common_ground": { "min_rounds": 1, "max_rounds": 999, "exit_signal": "[AGREED]", "description": "공통점 추출 (합의까지 끝장)" },
+      "consensus": { "min_rounds": 3, "max_rounds": 999, "exit_signal": "[CONSENSUS]", "description": "합의안 도출 (만장일치까지 끝장)" }
     },
     "settings": {
       "timeout": 120,
