@@ -24,6 +24,9 @@ cat "{{SKILL_DIR}}/../../debate.config.json"
 
 설정이 없거나 에이전트가 부족하면 `/ai-debate:debate-setup` 실행을 안내합니다.
 
+에이전트 목록을 변수로 저장합니다. config의 `agents` 배열에서 name을 추출합니다.
+예: `AGENT_NAMES="claude,codex,gemini"`
+
 ### Step 1: 토론 시작
 
 주제가 `$ARGUMENTS`에 있으면 사용하고, 없으면 AskUserQuestion으로 질문합니다.
@@ -33,7 +36,7 @@ cat "{{SKILL_DIR}}/../../debate.config.json"
 node "{{SKILL_DIR}}/../../scripts/debate-job.js" start --topic "$TOPIC" --agents "$AGENTS"
 ```
 
-결과에서 `debateDir`을 저장합니다.
+결과에서 `debateDir`과 `participants` 배열을 저장합니다.
 
 시작 배너를 출력합니다:
 ```
@@ -44,49 +47,70 @@ node "{{SKILL_DIR}}/../../scripts/debate-job.js" start --topic "$TOPIC" --agents
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-### Step 2: Stage 1 - 입장 제시 (1 round)
+## 에이전트별 실행 규칙 (핵심)
 
+모든 stage에서 `--agent` 옵션으로 에이전트를 **한 명씩** 실행합니다.
+한 에이전트의 응답이 오면 **즉시 사용자에게 출력**한 후, 다음 에이전트를 실행합니다.
+
+에이전트 실행 순서는 `participants` 배열 순서를 따릅니다.
+
+각 에이전트 실행:
 ```bash
-node "{{SKILL_DIR}}/../../scripts/debate-job.js" round --debate-dir "$DEBATE_DIR" --stage position --round 1
+node "{{SKILL_DIR}}/../../scripts/debate-job.js" round --debate-dir "$DEBATE_DIR" --stage "$STAGE" --round $N --agent "$AGENT_NAME"
 ```
 
-결과를 포맷하여 출력합니다:
+응답 출력 형식 (에이전트마다 즉시):
+```
+<emoji> <name> (<persona_role>):
+> <응답 내용>
+
+```
+
+### Step 2: Stage 1 - 입장 제시 (1 round)
+
+라운드 헤더를 먼저 출력합니다:
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📢 Stage 1/4: 입장 제시 | Round 1
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🧠 Codex (실용주의자):
-> [응답...]
-
-💎 Gemini (악마의 변호인):
-> [응답...]
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
+
+participants의 각 에이전트를 순서대로 한 명씩 실행합니다:
+```bash
+node "{{SKILL_DIR}}/../../scripts/debate-job.js" round --debate-dir "$DEBATE_DIR" --stage position --round 1 --agent "claude"
+```
+→ 결과 즉시 출력 → 다음 에이전트 실행 → 결과 즉시 출력 → ...
 
 ### Step 3: Stage 2 - 교차 질문 (4 rounds)
 
-4회 반복합니다 (round 1~4):
+4회 반복합니다 (round 1~4). 각 라운드마다:
+1. 라운드 헤더 출력 (`Stage 2/4: 교차 질문 | Round N`)
+2. participants의 각 에이전트를 순서대로 한 명씩 실행:
 ```bash
-node "{{SKILL_DIR}}/../../scripts/debate-job.js" round --debate-dir "$DEBATE_DIR" --stage cross-exam --round $N
+node "{{SKILL_DIR}}/../../scripts/debate-job.js" round --debate-dir "$DEBATE_DIR" --stage cross-exam --round $N --agent "$AGENT_NAME"
 ```
-
-각 라운드 결과를 동일한 포맷으로 출력합니다.
+3. 각 에이전트 응답을 즉시 출력
 
 ### Step 4: Stage 3 - 공통점 추출 (2 rounds)
 
-2회 반복합니다 (round 1~2):
+2회 반복합니다 (round 1~2). 각 라운드마다:
+1. 라운드 헤더 출력 (`Stage 3/4: 공통점 추출 | Round N`)
+2. participants의 각 에이전트를 순서대로 한 명씩 실행:
 ```bash
-node "{{SKILL_DIR}}/../../scripts/debate-job.js" round --debate-dir "$DEBATE_DIR" --stage common-ground --round $N
+node "{{SKILL_DIR}}/../../scripts/debate-job.js" round --debate-dir "$DEBATE_DIR" --stage common-ground --round $N --agent "$AGENT_NAME"
 ```
+3. 각 에이전트 응답을 즉시 출력
 
 ### Step 5: Stage 4 - 합의안 도출 (만장일치까지 끝장)
 
-전원 합의할 때까지 무한 반복합니다:
+전원 합의할 때까지 무한 반복합니다. 각 라운드마다:
+1. 라운드 헤더 출력 (`Stage 4/4: 합의안 도출 | 합의 시도 N회차`)
+2. participants의 각 에이전트를 순서대로 한 명씩 실행:
 ```bash
-node "{{SKILL_DIR}}/../../scripts/debate-job.js" round --debate-dir "$DEBATE_DIR" --stage consensus --round $N
+node "{{SKILL_DIR}}/../../scripts/debate-job.js" round --debate-dir "$DEBATE_DIR" --stage consensus --round $N --agent "$AGENT_NAME"
 ```
-
-각 라운드 후 합의 체크:
+3. 각 에이전트 응답을 즉시 출력 (응답에 `[CONSENSUS]`가 있으면 ✅ 표시)
+4. 모든 에이전트 완료 후 합의 체크:
 ```bash
 node "{{SKILL_DIR}}/../../scripts/debate-job.js" check-consensus --debate-dir "$DEBATE_DIR" --round $N
 ```

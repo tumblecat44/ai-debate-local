@@ -334,10 +334,89 @@ function waitForWorker(agentDir, agentName, timeout) {
   };
 }
 
+function runOneAgent(p, agentsDir, template, stage, round, debateMeta, history, consensusHistory, timeout) {
+  const agentDir = path.join(agentsDir, safeFileName(p.agent));
+  ensureDir(agentDir);
+
+  // Build current round context from agents who already have output this round
+  const currentRoundOutputs = [];
+  for (const prev of debateMeta.participants) {
+    if (prev.agent === p.agent) break;
+    const prevOutput = readTextIfExists(path.join(agentsDir, safeFileName(prev.agent), 'output.txt')).trim();
+    if (prevOutput) {
+      currentRoundOutputs.push({
+        label: `${prev.agent_emoji} ${prev.agent} (${prev.persona_role})`,
+        output: prevOutput,
+      });
+    }
+  }
+
+  const currentRoundContext = currentRoundOutputs
+    .map(o => `[${o.label}]:\n${o.output}`)
+    .join('\n\n');
+
+  let roundStatus = '';
+  let consensusInstruction = '';
+  if (stage === 'consensus') {
+    if (round >= 7) {
+      roundStatus = `현재 ${round}라운드입니다. 충분히 논쟁했습니다. 사소한 세부사항보다 핵심 원칙의 합의에 집중하세요. 완벽한 합의보다 실질적 합의가 중요합니다.`;
+    } else if (round >= 3) {
+      roundStatus = `현재 ${round}라운드입니다. 충분히 논쟁했다면 합의할 수 있습니다.`;
+    } else {
+      roundStatus = `현재 ${round}라운드입니다. 최소 3라운드까지는 합의할 수 없습니다. (${3 - round}라운드 남음)`;
+    }
+    consensusInstruction = round >= 3
+      ? '동의하면 응답 마지막에 [CONSENSUS]를 붙이세요. 동의하지 않으면 [DISAGREE]를 붙이세요.'
+      : '아직 합의할 수 없습니다. 논쟁을 계속하세요.';
+  }
+
+  const prompt = renderTemplate(template, {
+    agent_name: p.agent,
+    persona_role: p.persona_role,
+    persona_style: p.persona_style,
+    persona_stance: p.persona_stance,
+    topic: debateMeta.topic,
+    round: String(round),
+    history,
+    current_round_context: currentRoundContext,
+    consensus_history: consensusHistory,
+    round_status: roundStatus,
+    consensus_instruction: consensusInstruction,
+  });
+
+  fs.writeFileSync(path.join(agentDir, 'prompt.txt'), prompt, 'utf8');
+  atomicWriteJson(path.join(agentDir, 'status.json'), {
+    member: p.agent, state: 'queued',
+    queuedAt: new Date().toISOString(), command: p.command,
+  });
+
+  const workerArgs = [
+    WORKER_PATH,
+    '--agent-dir', agentDir,
+    '--member', p.agent,
+    '--command', p.command,
+    '--timeout', String(timeout),
+  ];
+
+  const child = spawn(process.execPath, workerArgs, {
+    detached: true, stdio: 'ignore', env: process.env,
+  });
+  child.unref();
+
+  const result = waitForWorker(agentDir, p.agent, timeout);
+  return {
+    agent: p.agent,
+    persona: `${p.agent_emoji} ${p.persona_role}`,
+    state: result.state,
+    output: result.output,
+  };
+}
+
 function cmdRound(options) {
   const debateDir = options['debate-dir'];
   const stage = options.stage;
   const round = parseInt(options.round || '1');
+  const targetAgent = options.agent;
 
   if (!debateDir) exitWithError('round: missing --debate-dir');
   if (!stage) exitWithError('round: missing --stage');
@@ -351,102 +430,43 @@ function cmdRound(options) {
   const roundDir = path.join(debateDir, 'stages', stageInfo.dir, `round-${round}`);
   const agentsDir = path.join(roundDir, 'agents');
 
-  // Build history from previous stages/rounds
   const history = stage === 'position' ? '' : buildHistory(debateDir, stageInfo.dir, round);
   const consensusHistory = stage === 'consensus' ? buildConsensusHistory(debateDir, round) : '';
 
   const participants = debateMeta.participants;
   const timeout = debateMeta.settings.timeout || 120;
 
-  // --- Sequential execution: each agent sees previous agents' responses from THIS round ---
-  const currentRoundOutputs = [];
-  const results = [];
+  if (targetAgent) {
+    // --- Single agent mode: run one agent and return immediately ---
+    const p = participants.find(x => x.agent === targetAgent);
+    if (!p) exitWithError(`round: agent "${targetAgent}" not found in participants`);
 
-  for (const p of participants) {
-    const agentSafe = safeFileName(p.agent);
-    const agentDir = path.join(agentsDir, agentSafe);
-    ensureDir(agentDir);
+    const result = runOneAgent(p, agentsDir, template, stage, round, debateMeta, history, consensusHistory, timeout);
 
-    // Build current round context from agents who already spoke this round
-    const currentRoundContext = currentRoundOutputs
-      .map(o => `[${o.label}]:\n${o.output}`)
-      .join('\n\n');
+    debateMeta.currentStage = stage;
+    debateMeta.currentRound = round;
+    atomicWriteJson(path.join(debateDir, 'debate.json'), debateMeta);
 
-    // Build round-aware consensus fields
-    let roundStatus = '';
-    let consensusInstruction = '';
-    if (stage === 'consensus') {
-      if (round >= 7) {
-        roundStatus = `현재 ${round}라운드입니다. 충분히 논쟁했습니다. 사소한 세부사항보다 핵심 원칙의 합의에 집중하세요. 완벽한 합의보다 실질적 합의가 중요합니다.`;
-      } else if (round >= 3) {
-        roundStatus = `현재 ${round}라운드입니다. 충분히 논쟁했다면 합의할 수 있습니다.`;
-      } else {
-        roundStatus = `현재 ${round}라운드입니다. 최소 3라운드까지는 합의할 수 없습니다. (${3 - round}라운드 남음)`;
-      }
-      consensusInstruction = round >= 3
-        ? '동의하면 응답 마지막에 [CONSENSUS]를 붙이세요. 동의하지 않으면 [DISAGREE]를 붙이세요.'
-        : '아직 합의할 수 없습니다. 논쟁을 계속하세요.';
+    process.stdout.write(JSON.stringify({
+      debateDir, stage, round, results: [result],
+    }, null, 2) + '\n');
+  } else {
+    // --- All agents mode: run all sequentially ---
+    const results = [];
+    for (const p of participants) {
+      const result = runOneAgent(p, agentsDir, template, stage, round, debateMeta, history, consensusHistory, timeout);
+      results.push(result);
     }
 
-    // Render prompt with current round context included
-    const prompt = renderTemplate(template, {
-      agent_name: p.agent,
-      persona_role: p.persona_role,
-      persona_style: p.persona_style,
-      persona_stance: p.persona_stance,
-      topic: debateMeta.topic,
-      round: String(round),
-      history,
-      current_round_context: currentRoundContext,
-      consensus_history: consensusHistory,
-      round_status: roundStatus,
-      consensus_instruction: consensusInstruction,
-    });
+    debateMeta.currentStage = stage;
+    debateMeta.currentRound = round;
+    debateMeta.totalRounds++;
+    atomicWriteJson(path.join(debateDir, 'debate.json'), debateMeta);
 
-    fs.writeFileSync(path.join(agentDir, 'prompt.txt'), prompt, 'utf8');
-    atomicWriteJson(path.join(agentDir, 'status.json'), {
-      member: p.agent, state: 'queued',
-      queuedAt: new Date().toISOString(), command: p.command,
-    });
-
-    // Spawn worker and WAIT for completion before next agent
-    const workerArgs = [
-      WORKER_PATH,
-      '--agent-dir', agentDir,
-      '--member', p.agent,
-      '--command', p.command,
-      '--timeout', String(timeout),
-    ];
-
-    const child = spawn(process.execPath, workerArgs, {
-      detached: true, stdio: 'ignore', env: process.env,
-    });
-    child.unref();
-
-    // Wait for this agent to finish
-    const result = waitForWorker(agentDir, p.agent, timeout);
-
-    // Collect output for next agent's context
-    const label = `${p.agent_emoji} ${p.agent} (${p.persona_role})`;
-    currentRoundOutputs.push({ label, output: result.output });
-
-    results.push({
-      agent: p.agent,
-      persona: `${p.agent_emoji} ${p.persona_role}`,
-      state: result.state,
-      output: result.output,
-    });
+    process.stdout.write(JSON.stringify({
+      debateDir, stage, round, results,
+    }, null, 2) + '\n');
   }
-
-  // Update debate meta
-  debateMeta.currentStage = stage;
-  debateMeta.currentRound = round;
-  debateMeta.totalRounds++;
-  atomicWriteJson(path.join(debateDir, 'debate.json'), debateMeta);
-
-  process.stdout.write(JSON.stringify({
-    debateDir, stage, round, results,
-  }, null, 2) + '\n');
 }
 
 function cmdStatus(options) {
